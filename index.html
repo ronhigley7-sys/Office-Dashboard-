@@ -462,6 +462,10 @@ function sourceName(key){
   if(key==='hand_hygiene_observations')return 'Smartsheet Hand Hygiene feed';
   return key||'No data';
 }
+function kpiSource(data, field){
+  const source=String(data?.[field]||'').trim();
+  return source||sourceName('floor3_kpi');
+}
 function monthKeyFromRow(row){
   if(row?.month_key)return String(row.month_key);
   const year=n(row?.year);
@@ -541,6 +545,7 @@ function liveKpiTotals(key){
     if(handCount>0){
       result.hand.count+=handCount;
       result.hand.met+=handCount;
+      result.hand.source=kpiSource(data,'handHygieneSource');
       result.hand.sourceKey='floor3_kpi';
     }
     const painMet=n(data.painNum ?? data.painMet);
@@ -548,6 +553,7 @@ function liveKpiTotals(key){
     if(painTotal>0){
       result.pain.met+=painMet;
       result.pain.total+=painTotal;
+      result.pain.source=kpiSource(data,'painReassessmentSource');
       result.pain.sourceKey='floor3_kpi';
     }
   });
