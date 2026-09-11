@@ -412,8 +412,10 @@ const MONTHS=['January','February','March','April','May','June','July','August',
 let sbClient=null;
 let liveRows=[];
 let liveKpiRows=[];
+let liveHandHygieneRows=[];
 let liveLoaded=false;
 let kpiLoaded=false;
+let handHygieneLoaded=false;
 let liveMessage='Not loaded';
 let userChangedMonth=false;
 
@@ -447,7 +449,8 @@ function classFor(value,target){
 function normUnit(value){
   const raw=String(value||'').trim();
   const t=raw.toLowerCase();
-  if(['3b','3c','3bc','3b/3c','3b 3c','3rd floor','third floor','3bc ms obs'].includes(t))return '3rd Floor';
+  const thirdFloor=['3b','3c','3bc','3b/3c','3b 3c','3rd floor','third floor','3bc ms obs','aomc 3b','aomc 3c','aomc 3b/3c','aomc 3bc','aomc 3bc ms obs'];
+  if(thirdFloor.includes(t))return '3rd Floor';
   return raw;
 }
 function sourceName(key){
@@ -456,7 +459,16 @@ function sourceName(key){
   if(key==='cc_monthly_kpi_repair_state_v1')return 'Command Center KPI repair';
   if(key===OFFICE_KPI_KEY)return 'Office saved entry';
   if(key==='floor3_kpi')return 'Smartsheet KPI feed';
+  if(key==='hand_hygiene_observations')return 'Smartsheet Hand Hygiene feed';
   return key||'No data';
+}
+function monthKeyFromRow(row){
+  if(row?.month_key)return String(row.month_key);
+  const year=n(row?.year);
+  const month=n(row?.month);
+  if(year&&month)return `${year}-${String(month).padStart(2,'0')}`;
+  const date=String(row?.audit_date||row?.observation_date||'');
+  return date.length>=7?date.slice(0,7):'';
 }
 function getQualityData(obj){
   if(obj?.qualityData && typeof obj.qualityData==='object')return obj.qualityData;
@@ -541,6 +553,23 @@ function liveKpiTotals(key){
   });
   return result;
 }
+function liveHandHygieneTotals(key){
+  const filtered=liveHandHygieneRows.filter(row=>{
+    const unit=normUnit(row.location||row.audit_location||row.unit);
+    return unit==='3rd Floor' && monthKeyFromRow(row)===key;
+  });
+  const count=filtered.length;
+  return {
+    hand:{
+      met:count,
+      total:0,
+      count,
+      source:sourceName('hand_hygiene_observations'),
+      sourceKey:count?'hand_hygiene_observations':''
+    },
+    rows:count
+  };
+}
 function livePlatoTotals(key){
   const filtered=liveRows.filter(row=>{
     const unit=normUnit(row.unit||row.nurse_home_unit);
@@ -576,14 +605,16 @@ function totalsForMonth(key){
   const shared=sharedQualityTotals(key);
   const office=officeEntryTotals(key);
   const kpi=liveKpiTotals(key);
+  const handHygiene=liveHandHygieneTotals(key);
   const live=livePlatoTotals(key);
   return {
-    hand:pickMetric(kpi.hand,shared.hand,office.hand),
+    hand:pickMetric(handHygiene.hand,kpi.hand,shared.hand,office.hand),
     pain:pickMetric(kpi.pain,shared.pain,office.pain),
     platoFall:pickMetric(live.platoFall,shared.platoFall,office.platoFall),
     platoHapi:pickMetric(live.platoHapi,shared.platoHapi,office.platoHapi),
     liveRows:live.rows,
-    kpiRows:kpi.rows
+    kpiRows:kpi.rows,
+    handRows:handHygiene.rows
   };
 }
 function metricValue(key,data){
@@ -603,17 +634,21 @@ function metricDetail(key,data){
   const target=TARGETS[key].target;
   return `${data.met}/${data.total} met - target ${target}%`;
 }
-function latestKpiMonth(){
-  const months=liveKpiRows.map(row=>String(row.month_key||'')).filter(Boolean).sort();
+function latestFeedMonth(){
+  const months=[
+    ...liveKpiRows.map(row=>String(row.month_key||'')),
+    ...liveHandHygieneRows.map(monthKeyFromRow),
+    ...liveRows.map(row=>String(row.observation_date||row.month||'').slice(0,7))
+  ].filter(Boolean).sort();
   return months.length?months[months.length-1]:'';
 }
 function maybeSelectLatestKpiMonth(){
   const input=$('monthInput');
-  if(!input||userChangedMonth||!kpiLoaded)return;
+  if(!input||userChangedMonth||!(liveLoaded||kpiLoaded||handHygieneLoaded))return;
   const key=input.value||monthKeyNow();
-  const hasCurrentKpi=liveKpiTotals(key).rows>0;
-  const latest=latestKpiMonth();
-  if(!hasCurrentKpi && latest)input.value=latest;
+  const hasCurrentData=liveKpiTotals(key).rows>0 || liveHandHygieneTotals(key).rows>0 || livePlatoTotals(key).rows>0;
+  const latest=latestFeedMonth();
+  if(!hasCurrentData && latest)input.value=latest;
 }
 function renderKpiCard(key,data){
   const target=TARGETS[key].target;
@@ -722,10 +757,11 @@ function render(){
     return value!==null && value<TARGETS[metric].target;
   }).length;
   $('monthLabel').textContent=monthLabel(key);
-  $('liveStatus').textContent=(liveLoaded||kpiLoaded)?'Connected':'Not loaded';
-  const latest=latestKpiMonth();
-  const latestText=latest?` Latest KPI month in feed: ${monthLabel(latest)}.`:'';
-  $('liveNote').textContent=(liveLoaded||kpiLoaded)?`${liveKpiRows.length} KPI rows and ${liveRows.length} PLATO rows loaded. ${totals.kpiRows} KPI and ${totals.liveRows} PLATO rows match 3rd Floor for this month.${latestText}`:liveMessage;
+  const feedsLoaded=liveLoaded||kpiLoaded||handHygieneLoaded;
+  $('liveStatus').textContent=feedsLoaded?'Connected':'Not loaded';
+  const latest=latestFeedMonth();
+  const latestText=latest?` Latest feed month: ${monthLabel(latest)}.`:'';
+  $('liveNote').textContent=feedsLoaded?`${liveHandHygieneRows.length} Hand Hygiene rows, ${liveKpiRows.length} KPI rows, and ${liveRows.length} PLATO rows loaded. ${totals.handRows} Hand Hygiene, ${totals.kpiRows} KPI, and ${totals.liveRows} PLATO rows match 3rd Floor for this month.${latestText}`:liveMessage;
   $('boardStatus').textContent=missing?`${missing} Missing`:(below?`${below} Below Target`:'At Target');
   $('boardNote').textContent=missing?'Add missing monthly data or check the feed.':(below?'Use action items below for follow-up.':'All available measures are at target.');
   $('kpiGrid').innerHTML=Object.keys(TARGETS).map(metric=>renderKpiCard(metric,totals[metric])).join('');
@@ -776,7 +812,8 @@ async function refreshLiveData(){
   clearError();
   liveLoaded=false;
   kpiLoaded=false;
-  liveMessage='Loading Smartsheet KPI and PLATO data';
+  handHygieneLoaded=false;
+  liveMessage='Loading Smartsheet Hand Hygiene, KPI, and PLATO data';
   render();
   if(typeof supabase==='undefined'){
     liveMessage='Supabase library did not load. Check internet/CDN access.';
@@ -800,7 +837,7 @@ async function refreshLiveData(){
       }
       return all;
     };
-    const results=await Promise.allSettled([fetchTable('plato_observations'),fetchTable('floor3_kpi')]);
+    const results=await Promise.allSettled([fetchTable('plato_observations'),fetchTable('floor3_kpi'),fetchTable('hand_hygiene_observations')]);
     if(results[0].status==='fulfilled'){
       liveRows=results[0].value;
       liveLoaded=true;
@@ -815,6 +852,13 @@ async function refreshLiveData(){
       liveKpiRows=[];
       kpiLoaded=false;
     }
+    if(results[2].status==='fulfilled'){
+      liveHandHygieneRows=results[2].value;
+      handHygieneLoaded=true;
+    }else{
+      liveHandHygieneRows=[];
+      handHygieneLoaded=false;
+    }
     const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason?.message||String(r.reason));
     liveMessage=errors.length?errors.join(' | '):'Live data loaded';
     maybeSelectLatestKpiMonth();
@@ -823,8 +867,10 @@ async function refreshLiveData(){
   }catch(err){
     liveRows=[];
     liveKpiRows=[];
+    liveHandHygieneRows=[];
     liveLoaded=false;
     kpiLoaded=false;
+    handHygieneLoaded=false;
     liveMessage=err?.message||String(err);
     render();
     showError('Live data could not be loaded: '+liveMessage);
