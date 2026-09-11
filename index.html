@@ -319,7 +319,7 @@ textarea{
     <div>
       <div class="eyebrow">Arnot Health - AOMC</div>
       <h1>3rd Floor Monthly KPI Board</h1>
-      <div class="sub">Office dashboard for Hand Hygiene, Pain Reassessment, and PLATO rounds.</div>
+      <div class="sub">Office dashboard for Hand Hygiene and Pain Reassessment from Smartsheet KPI data, plus PLATO rounds.</div>
     </div>
     <div class="toolbar">
       <input id="monthInput" type="month" aria-label="Review month">
@@ -337,12 +337,12 @@ textarea{
     <div class="status-card">
       <div class="label">Selected Month</div>
       <div id="monthLabel" class="status-value">Loading</div>
-      <div id="monthNote" class="status-note">Monthly totals update when shared Command Center entries or live PLATO rows are available.</div>
+      <div id="monthNote" class="status-note">Monthly totals update when Smartsheet KPI rows or live PLATO rows are available.</div>
     </div>
     <div class="status-card">
-      <div class="label">Live PLATO Feed</div>
+      <div class="label">Live Data Feeds</div>
       <div id="liveStatus" class="status-value">Not loaded</div>
-      <div id="liveNote" class="status-note">Uses the same Supabase table populated by the Smartsheet PLATO sync.</div>
+      <div id="liveNote" class="status-note">Uses Supabase tables populated by the Smartsheet KPI and PLATO syncs.</div>
     </div>
     <div class="status-card">
       <div class="label">Board Status</div>
@@ -359,12 +359,12 @@ textarea{
         <h2>Monthly KPI Entry</h2>
         <div class="entry-grid header">
           <div>Measure</div>
-          <div>Met</div>
+          <div>Met / Count</div>
           <div>Total</div>
           <div>Current</div>
         </div>
         <div id="entryRows"></div>
-        <div class="footer-note">Hand Hygiene and Pain Reassessment read from shared Command Center monthly quality entries when available. Office entries are used as a fallback. PLATO reads live first, then shared entries, then office entries.</div>
+        <div class="footer-note">Hand Hygiene and Pain Reassessment read from Smartsheet KPI rows first. Shared Command Center and office entries are fallbacks. PLATO reads live first, then shared entries, then office entries.</div>
       </div>
 
       <div class="card">
@@ -403,15 +403,17 @@ const SB_KEY='eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZ
 const OFFICE_KPI_KEY='aomc_3rd_floor_monthly_kpi_board_v1';
 const SHARED_KPI_KEYS=['3B_StaffApp_v1','_3bTracker','cc_monthly_kpi_repair_state_v1'];
 const TARGETS={
-  hand:{label:'Hand Hygiene',target:90,met:'handMet',total:'handTotal'},
-  pain:{label:'Pain Reassessment',target:95,met:'painMet',total:'painTotal'},
-  platoFall:{label:'PLATO Fall Rounds',target:90,met:'platoFallMet',total:'platoFallTotal'},
-  platoHapi:{label:'PLATO HAPI Rounds',target:90,met:'platoHapiMet',total:'platoHapiTotal'}
+  hand:{label:'Hand Hygiene',type:'count',target:null,met:'handMet',total:'handTotal'},
+  pain:{label:'Pain Reassessment',type:'percent',target:95,met:'painMet',total:'painTotal'},
+  platoFall:{label:'PLATO Fall Rounds',type:'percent',target:90,met:'platoFallMet',total:'platoFallTotal'},
+  platoHapi:{label:'PLATO HAPI Rounds',type:'percent',target:90,met:'platoHapiMet',total:'platoHapiTotal'}
 };
 const MONTHS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 let sbClient=null;
 let liveRows=[];
+let liveKpiRows=[];
 let liveLoaded=false;
+let kpiLoaded=false;
 let liveMessage='Not loaded';
 
 function $(id){return document.getElementById(id);}
@@ -430,10 +432,13 @@ function readJson(key){
 }
 function savedOffice(){return readJson(OFFICE_KPI_KEY)||{};}
 function writeOffice(obj){localStorage.setItem(OFFICE_KPI_KEY,JSON.stringify(obj));}
-function hasPair(pair){return pair && Number(pair.total)>0;}
-function blankPair(source){return {met:0,total:0,source:source||'No data',sourceKey:''};}
+function n(value){const num=Number(value);return Number.isFinite(num)?num:0;}
+function metricKind(key){return TARGETS[key]?.type||'percent';}
+function hasPair(pair){return pair && (Number(pair.total)>0 || Number(pair.count)>0);}
+function blankPair(source){return {met:0,total:0,count:0,source:source||'No data',sourceKey:''};}
 function classFor(value,target){
   if(value===null)return 'nodata';
+  if(target===null||target===undefined)return 'good';
   if(value>=target)return 'good';
   if(value>=target-10)return 'warn';
   return 'bad';
@@ -449,6 +454,7 @@ function sourceName(key){
   if(key==='_3bTracker')return 'Command Center';
   if(key==='cc_monthly_kpi_repair_state_v1')return 'Command Center KPI repair';
   if(key===OFFICE_KPI_KEY)return 'Office saved entry';
+  if(key==='floor3_kpi')return 'Smartsheet KPI feed';
   return key||'No data';
 }
 function getQualityData(obj){
@@ -498,12 +504,41 @@ function sharedQualityTotals(key){
 }
 function officeEntryTotals(key){
   const rec=savedOffice()[key]||{};
+  const handCount=n(rec.handCount ?? rec.handMet ?? rec.handTotal);
   return {
-    hand:{met:Number(rec.handMet)||0,total:Number(rec.handTotal)||0,source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
-    pain:{met:Number(rec.painMet)||0,total:Number(rec.painTotal)||0,source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
-    platoFall:{met:Number(rec.platoFallMet)||0,total:Number(rec.platoFallTotal)||0,source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
-    platoHapi:{met:Number(rec.platoHapiMet)||0,total:Number(rec.platoHapiTotal)||0,source:'Office saved entry',sourceKey:OFFICE_KPI_KEY}
+    hand:{met:handCount,total:0,count:handCount,source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
+    pain:{met:n(rec.painMet),total:n(rec.painTotal),source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
+    platoFall:{met:n(rec.platoFallMet),total:n(rec.platoFallTotal),source:'Office saved entry',sourceKey:OFFICE_KPI_KEY},
+    platoHapi:{met:n(rec.platoHapiMet),total:n(rec.platoHapiTotal),source:'Office saved entry',sourceKey:OFFICE_KPI_KEY}
   };
+}
+function liveKpiTotals(key){
+  const filtered=liveKpiRows.filter(row=>{
+    const unit=normUnit(row.unit);
+    return unit==='3rd Floor' && String(row.month_key||'')===key;
+  });
+  const result={
+    hand:blankPair(sourceName('floor3_kpi')),
+    pain:blankPair(sourceName('floor3_kpi')),
+    rows:filtered.length
+  };
+  filtered.forEach(row=>{
+    const data=row.kpi_data||{};
+    const handCount=n(data.hhAudits ?? data.handAudits ?? data.handHygieneAudits);
+    if(handCount>0){
+      result.hand.count+=handCount;
+      result.hand.met+=handCount;
+      result.hand.sourceKey='floor3_kpi';
+    }
+    const painMet=n(data.painNum ?? data.painMet);
+    const painTotal=n(data.painDen ?? data.painTotal ?? data.painAudits);
+    if(painTotal>0){
+      result.pain.met+=painMet;
+      result.pain.total+=painTotal;
+      result.pain.sourceKey='floor3_kpi';
+    }
+  });
+  return result;
 }
 function livePlatoTotals(key){
   const filtered=liveRows.filter(row=>{
@@ -539,30 +574,62 @@ function pickMetric(){
 function totalsForMonth(key){
   const shared=sharedQualityTotals(key);
   const office=officeEntryTotals(key);
+  const kpi=liveKpiTotals(key);
   const live=livePlatoTotals(key);
   return {
-    hand:pickMetric(shared.hand,office.hand),
-    pain:pickMetric(shared.pain,office.pain),
+    hand:pickMetric(kpi.hand,shared.hand,office.hand),
+    pain:pickMetric(kpi.pain,shared.pain,office.pain),
     platoFall:pickMetric(live.platoFall,shared.platoFall,office.platoFall),
     platoHapi:pickMetric(live.platoHapi,shared.platoHapi,office.platoHapi),
-    liveRows:live.rows
+    liveRows:live.rows,
+    kpiRows:kpi.rows
   };
+}
+function metricValue(key,data){
+  if(metricKind(key)==='count')return hasPair(data)?n(data.count ?? data.met):null;
+  return pct(data.met,data.total);
+}
+function metricDisplay(key,data){
+  const value=metricValue(key,data);
+  if(value===null)return '--';
+  return metricKind(key)==='count'?String(value):value+'%';
+}
+function metricDetail(key,data){
+  if(metricKind(key)==='count'){
+    const count=metricValue(key,data);
+    return count===null?'No audit count found':`${count} audits for ${monthLabel(currentKey())}`;
+  }
+  const target=TARGETS[key].target;
+  return `${data.met}/${data.total} met - target ${target}%`;
+}
+function latestKpiMonth(){
+  const months=liveKpiRows.map(row=>String(row.month_key||'')).filter(Boolean).sort();
+  return months.length?months[months.length-1]:'';
 }
 function renderKpiCard(key,data){
   const target=TARGETS[key].target;
-  const value=pct(data.met,data.total);
+  const value=metricValue(key,data);
   const cls=classFor(value,target);
   return `<div class="kpi ${cls}">
     <div class="kpi-title">${esc(TARGETS[key].label)}</div>
-    <div class="kpi-value">${value===null?'--':value+'%'}</div>
-    <div class="kpi-detail">${data.met}/${data.total} met - target ${target}%</div>
+    <div class="kpi-value">${metricDisplay(key,data)}</div>
+    <div class="kpi-detail">${esc(metricDetail(key,data))}</div>
     <span class="kpi-source">${esc(data.source)}</span>
   </div>`;
 }
 function renderEntryRow(key,data){
   const target=TARGETS[key].target;
-  const value=pct(data.met,data.total);
+  const value=metricValue(key,data);
   const cls=classFor(value,target);
+  if(metricKind(key)==='count'){
+    const count=metricValue(key,data);
+    return `<div class="entry-grid row">
+      <div><strong>${esc(TARGETS[key].label)}</strong><div class="status-note">Monthly audit count</div></div>
+      <div><input id="${key}Count" type="number" min="0" value="${count??0}" aria-label="${esc(TARGETS[key].label)} count"></div>
+      <div><span class="status-note">Audits</span></div>
+      <div><span class="pct-chip ${cls}">${count===null?'--':count}</span></div>
+    </div>`;
+  }
   return `<div class="entry-grid row">
     <div><strong>${esc(TARGETS[key].label)}</strong><div class="status-note">Target ${target}%</div></div>
     <div><input id="${key}Met" type="number" min="0" value="${Number(data.met)||0}" aria-label="${esc(TARGETS[key].label)} met"></div>
@@ -574,7 +641,11 @@ function actionFor(key,value,data){
   const label=TARGETS[key].label;
   const target=TARGETS[key].target;
   if(value===null){
-    return `<div class="action-item"><strong>${esc(label)}:</strong> Add monthly met/total data or confirm the source feed for ${esc(monthLabel(currentKey()))}.</div>`;
+    const detail=metricKind(key)==='count'?'monthly audit count':'monthly met/total data';
+    return `<div class="action-item"><strong>${esc(label)}:</strong> Add ${detail} or confirm the Smartsheet feed has a row for ${esc(monthLabel(currentKey()))}.</div>`;
+  }
+  if(metricKind(key)==='count'){
+    return `<div class="action-item"><strong>${esc(label)}:</strong> ${value} audits loaded from ${esc(data.source)}. Review weekly coverage and add focused observations if the count is low for the month.</div>`;
   }
   if(value>=target){
     return `<div class="action-item"><strong>${esc(label)}:</strong> At target. Continue weekly spot checks and keep evidence ready for the monthly office board.</div>`;
@@ -596,22 +667,22 @@ function renderSources(totals){
     return `<tr>
       <td>${esc(TARGETS[key].label)}</td>
       <td><strong>${esc(data.source)}</strong></td>
-      <td>${data.total>0?`${data.met}/${data.total} for ${esc(monthLabel(currentKey()))}`:'No usable denominator found'}</td>
+      <td>${esc(metricDetail(key,data))}</td>
     </tr>`;
   }).join('');
 }
 function renderSummary(totals){
   const items=Object.keys(TARGETS).map(key=>{
     const data=totals[key];
-    const value=pct(data.met,data.total);
-    const cls=classFor(value,TARGETS[key].target);
-    const status=value===null?'Missing data':value>=TARGETS[key].target?'At target':value>=TARGETS[key].target-10?'Watch closely':'Needs action';
-    return `<div class="summary-item"><strong>${esc(TARGETS[key].label)}:</strong> ${value===null?'No data':value+'%'} - ${status}. Source: ${esc(data.source)}.</div>`;
+    const value=metricValue(key,data);
+    const target=TARGETS[key].target;
+    const status=value===null?'Missing data':metricKind(key)==='count'?'Audit count loaded':value>=target?'At target':value>=target-10?'Watch closely':'Needs action';
+    return `<div class="summary-item"><strong>${esc(TARGETS[key].label)}:</strong> ${esc(metricDisplay(key,data))} - ${status}. Source: ${esc(data.source)}.</div>`;
   });
   $('summaryList').innerHTML=items.join('');
 }
 function renderActions(totals){
-  $('actionItems').innerHTML=Object.keys(TARGETS).map(key=>actionFor(key,pct(totals[key].met,totals[key].total),totals[key])).join('');
+  $('actionItems').innerHTML=Object.keys(TARGETS).map(key=>actionFor(key,metricValue(key,totals[key]),totals[key])).join('');
 }
 function renderHistory(){
   const saved=savedOffice();
@@ -623,7 +694,7 @@ function renderHistory(){
   $('historyList').innerHTML=keys.map(key=>{
     const rec=saved[key]||{};
     const bits=[
-      `Hand ${pct(rec.handMet,rec.handTotal)??'--'}%`,
+      `Hand ${n(rec.handCount ?? rec.handMet ?? rec.handTotal)||'--'} audits`,
       `Pain ${pct(rec.painMet,rec.painTotal)??'--'}%`,
       `PLATO Fall ${pct(rec.platoFallMet,rec.platoFallTotal)??'--'}%`,
       `PLATO HAPI ${pct(rec.platoHapiMet,rec.platoHapiTotal)??'--'}%`
@@ -634,15 +705,18 @@ function renderHistory(){
 function render(){
   const key=currentKey();
   const totals=totalsForMonth(key);
-  const values=Object.keys(TARGETS).map(metric=>pct(totals[metric].met,totals[metric].total));
+  const values=Object.keys(TARGETS).map(metric=>metricValue(metric,totals[metric]));
   const missing=values.filter(v=>v===null).length;
   const below=Object.keys(TARGETS).filter(metric=>{
-    const value=pct(totals[metric].met,totals[metric].total);
+    if(metricKind(metric)==='count')return false;
+    const value=metricValue(metric,totals[metric]);
     return value!==null && value<TARGETS[metric].target;
   }).length;
   $('monthLabel').textContent=monthLabel(key);
-  $('liveStatus').textContent=liveLoaded?'Connected':'Not loaded';
-  $('liveNote').textContent=liveLoaded?`${liveRows.length} total PLATO rows loaded. ${totals.liveRows} match 3rd Floor for this month.`:liveMessage;
+  $('liveStatus').textContent=(liveLoaded||kpiLoaded)?'Connected':'Not loaded';
+  const latest=latestKpiMonth();
+  const latestText=latest?` Latest KPI month in feed: ${monthLabel(latest)}.`:'';
+  $('liveNote').textContent=(liveLoaded||kpiLoaded)?`${liveKpiRows.length} KPI rows and ${liveRows.length} PLATO rows loaded. ${totals.kpiRows} KPI and ${totals.liveRows} PLATO rows match 3rd Floor for this month.${latestText}`:liveMessage;
   $('boardStatus').textContent=missing?`${missing} Missing`:(below?`${below} Below Target`:'At Target');
   $('boardNote').textContent=missing?'Add missing monthly data or check the feed.':(below?'Use action items below for follow-up.':'All available measures are at target.');
   $('kpiGrid').innerHTML=Object.keys(TARGETS).map(metric=>renderKpiCard(metric,totals[metric])).join('');
@@ -666,9 +740,11 @@ function entryValue(id){return Number($(id)?.value)||0;}
 function saveOfficeEntry(){
   const key=currentKey();
   const saved=savedOffice();
+  const handCount=entryValue('handCount');
   saved[key]={
-    handMet:entryValue('handMet'),
-    handTotal:entryValue('handTotal'),
+    handCount,
+    handMet:handCount,
+    handTotal:0,
     painMet:entryValue('painMet'),
     painTotal:entryValue('painTotal'),
     platoFallMet:entryValue('platoFallMet'),
@@ -690,7 +766,8 @@ function clearOfficeEntry(){
 async function refreshLiveData(){
   clearError();
   liveLoaded=false;
-  liveMessage='Loading live PLATO data';
+  kpiLoaded=false;
+  liveMessage='Loading Smartsheet KPI and PLATO data';
   render();
   if(typeof supabase==='undefined'){
     liveMessage='Supabase library did not load. Check internet/CDN access.';
@@ -700,27 +777,47 @@ async function refreshLiveData(){
   }
   try{
     sbClient=sbClient||supabase.createClient(SB_URL,SB_KEY);
-    const pageSize=1000;
-    let from=0;
-    let all=[];
-    while(true){
-      const {data,error}=await sbClient.from('plato_observations').select('*').range(from,from+pageSize-1);
-      if(error)throw error;
-      if(!data||!data.length)break;
-      all=all.concat(data);
-      if(data.length<pageSize)break;
-      from+=pageSize;
+    const fetchTable=async table=>{
+      const pageSize=1000;
+      let from=0;
+      let all=[];
+      while(true){
+        const {data,error}=await sbClient.from(table).select('*').range(from,from+pageSize-1);
+        if(error)throw new Error(`${table}: ${error.message}`);
+        if(!data||!data.length)break;
+        all=all.concat(data);
+        if(data.length<pageSize)break;
+        from+=pageSize;
+      }
+      return all;
+    };
+    const results=await Promise.allSettled([fetchTable('plato_observations'),fetchTable('floor3_kpi')]);
+    if(results[0].status==='fulfilled'){
+      liveRows=results[0].value;
+      liveLoaded=true;
+    }else{
+      liveRows=[];
+      liveLoaded=false;
     }
-    liveRows=all;
-    liveLoaded=true;
-    liveMessage='Live PLATO loaded';
+    if(results[1].status==='fulfilled'){
+      liveKpiRows=results[1].value;
+      kpiLoaded=true;
+    }else{
+      liveKpiRows=[];
+      kpiLoaded=false;
+    }
+    const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason?.message||String(r.reason));
+    liveMessage=errors.length?errors.join(' | '):'Live data loaded';
     render();
+    if(errors.length)showError('Some live data could not be loaded: '+liveMessage);
   }catch(err){
     liveRows=[];
+    liveKpiRows=[];
     liveLoaded=false;
+    kpiLoaded=false;
     liveMessage=err?.message||String(err);
     render();
-    showError('Live PLATO data could not be loaded: '+liveMessage);
+    showError('Live data could not be loaded: '+liveMessage);
   }
 }
 window.addEventListener('storage',e=>{
