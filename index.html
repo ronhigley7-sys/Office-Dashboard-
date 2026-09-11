@@ -415,6 +415,7 @@ let liveKpiRows=[];
 let liveLoaded=false;
 let kpiLoaded=false;
 let liveMessage='Not loaded';
+let userChangedMonth=false;
 
 function $(id){return document.getElementById(id);}
 function esc(v){return String(v??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));}
@@ -605,6 +606,14 @@ function metricDetail(key,data){
 function latestKpiMonth(){
   const months=liveKpiRows.map(row=>String(row.month_key||'')).filter(Boolean).sort();
   return months.length?months[months.length-1]:'';
+}
+function maybeSelectLatestKpiMonth(){
+  const input=$('monthInput');
+  if(!input||userChangedMonth||!kpiLoaded)return;
+  const key=input.value||monthKeyNow();
+  const hasCurrentKpi=liveKpiTotals(key).rows>0;
+  const latest=latestKpiMonth();
+  if(!hasCurrentKpi && latest)input.value=latest;
 }
 function renderKpiCard(key,data){
   const target=TARGETS[key].target;
@@ -808,6 +817,7 @@ async function refreshLiveData(){
     }
     const errors=results.filter(r=>r.status==='rejected').map(r=>r.reason?.message||String(r.reason));
     liveMessage=errors.length?errors.join(' | '):'Live data loaded';
+    maybeSelectLatestKpiMonth();
     render();
     if(errors.length)showError('Some live data could not be loaded: '+liveMessage);
   }catch(err){
@@ -825,7 +835,10 @@ window.addEventListener('storage',e=>{
 });
 document.addEventListener('DOMContentLoaded',()=>{
   $('monthInput').value=monthKeyNow();
-  $('monthInput').addEventListener('change',render);
+  $('monthInput').addEventListener('change',()=>{
+    userChangedMonth=true;
+    render();
+  });
   render();
   refreshLiveData();
 });
